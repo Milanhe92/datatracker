@@ -23,6 +23,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlencode, urlsplit, urlunsplit, urlparse
 from tempfile import mkstemp
 from wsgiref.handlers import format_date_time
+from itertools import chain
 
 from django import forms
 from django.core.cache import caches
@@ -2496,7 +2497,12 @@ def session_details(request, num, acronym):
         session.filtered_artifacts.sort(key=lambda d:artifact_types.index(d.document.type.slug))
         session.filtered_slides    = session.presentations.filter(document__type__slug='slides').order_by('order')
         session.filtered_drafts    = session.presentations.filter(document__type__slug='draft')
-        session.filtered_chatlog_and_polls = session.presentations.filter(document__type__slug__in=('chatlog', 'polls')).order_by('document__type__slug')
+        
+        filtered_polls = session.presentations.filter(document__type__slug=('polls'))
+        filtered_chatlogs = session.presentations.filter(document__type__slug=('chatlog'))
+        session.filtered_chatlog_and_polls = chain(filtered_chatlogs, filtered_polls)
+        session.chatlog = filtered_chatlogs.first()
+
         # TODO FIXME Deleted materials shouldn't be in the presentations
         for qs in [session.filtered_artifacts,session.filtered_slides,session.filtered_drafts]:
             qs = [p for p in qs if p.document.get_state_slug(p.document.type_id)!='deleted']
@@ -2522,6 +2528,8 @@ def session_details(request, num, acronym):
     else:
         pending_suggestions = SlideSubmission.objects.none()
 
+    tsa = session.official_timeslotassignment()
+    future = tsa is not None and timezone.now() < tsa.timeslot.end_time()
     return render(request, "meeting/session_details.html",
                   { 'scheduled_sessions':scheduled_sessions ,
                     'unscheduled_sessions':unscheduled_sessions , 
@@ -2532,6 +2540,7 @@ def session_details(request, num, acronym):
                     'can_manage_materials' : can_manage,
                     'can_view_request': can_view_request,
                     'thisweek': datetime_today()-datetime.timedelta(days=7),
+                    'future': future,
                   })
 
 class SessionDraftsForm(forms.Form):
@@ -2823,11 +2832,14 @@ def upload_session_minutes(request, session_id, num):
     else:
         form = UploadMinutesForm(show_apply_to_all_checkbox)
 
+    tsa = session.official_timeslotassignment()
+    future = tsa is not None and timezone.now() < tsa.timeslot.end_time()
     return render(request, "meeting/upload_session_minutes.html", 
                   {'session': session,
                    'session_number': session_number,
                    'minutes_sp' : minutes_sp,
                    'form': form,
+                   'future': future,
                   })
 
 @role_required("Secretariat")

@@ -235,7 +235,7 @@ jobs:
         docker run --rm --name collectstatics -v $(pwd):/workspace ghcr.io/ietf-tools/datatracker-app-base:${{ env.TARGET_BASE }} sh dev/build/collectstatics.sh
         echo "Pushing statics..."
         cd static
-        aws s3 sync . s3://static/dt/$PKG_VERSION --only-show-errors
+        aws s3 sync . s3://static/dt/$PKG_VERSION --only-show-errors --checksum-algorithm CRC32
 
     - name: Augment dockerignore for docker image build
       env:
@@ -444,6 +444,19 @@ jobs:
       PKG_VERSION: ${{needs.prepare.outputs.pkg_version}}
       
     steps:
+      - name: Refresh Staging DB
+        uses: the-actions-org/workflow-dispatch@v4
+        with:
+          workflow: update-staging-db.yml
+          repo: ietf-tools/infra-k8s
+          ref: main
+          token: ${{ secrets.GH_INFRA_K8S_TOKEN }}
+          inputs: '{ "sourceDb":"datatracker" }'
+          wait-for-completion: true
+          wait-for-completion-timeout: 5m
+          wait-for-completion-interval: 20s
+          display-workflow-run-url: false
+
       - name: Deploy to staging
         uses: the-actions-org/workflow-dispatch@v4
         with:
