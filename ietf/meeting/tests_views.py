@@ -12,9 +12,10 @@ import requests.exceptions
 import requests_mock
 
 from unittest import skipIf
-from mock import call, patch, PropertyMock
+from unittest.mock import call, patch, PropertyMock
 from pyquery import PyQuery
 from lxml.etree import tostring
+from icalendar import Calendar
 from io import StringIO, BytesIO
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urlsplit
@@ -66,8 +67,7 @@ from ietf.meeting.factories import (SessionFactory, ScheduleFactory,
     SessionPresentationFactory, MeetingFactory, FloorPlanFactory,
     TimeSlotFactory, SlideSubmissionFactory, RoomFactory,
     ConstraintFactory, MeetingHostFactory, ProceedingsMaterialFactory,
-    AttendedFactory)
-from ietf.stats.factories import MeetingRegistrationFactory
+    AttendedFactory, RegistrationFactory)
 from ietf.doc.factories import DocumentFactory, WgDraftFactory
 from ietf.submit.tests import submission_file
 from ietf.utils.test_utils import assert_ical_response_is_valid
@@ -385,9 +385,6 @@ class MeetingTests(BaseMeetingTestCase):
         r = self.client.get(ical_url)
 
         assert_ical_response_is_valid(self, r)
-        self.assertContains(r, "BEGIN:VTIMEZONE")
-        self.assertContains(r, "END:VTIMEZONE")
-        self.assertContains(r, meeting.time_zone, msg_prefix="time_zone should appear in its original case")
         self.assertNotEqual(
             meeting.time_zone,
             meeting.time_zone.lower(),
@@ -406,21 +403,32 @@ class MeetingTests(BaseMeetingTestCase):
         assert_ical_response_is_valid(self, r)
         self.assertContains(r, session.group.acronym)
         self.assertContains(r, session.group.name)
-        self.assertContains(r, session.remote_instructions)
-        self.assertContains(r, slot.location.name)
-        self.assertContains(r, 'https://onsite.example.com')
-        self.assertContains(r, 'https://meetecho.example.com')
-        self.assertContains(r, "BEGIN:VTIMEZONE")
-        self.assertContains(r, "END:VTIMEZONE")        
 
-        self.assertContains(r, session.agenda().get_href())
-        self.assertContains(
-            r,
+        cal = Calendar.from_ical(r.content)
+        events = [component for component in cal.walk() if component.name == "VEVENT"]
+
+        self.assertEqual(len(events), 2)
+        self.assertIn(session.remote_instructions, events[0].get('description'))
+        self.assertIn("Onsite tool: https://onsite.example.com", events[0].get('description'))
+        self.assertIn("Meetecho: https://meetecho.example.com", events[0].get('description'))
+        self.assertIn(f"Agenda {session.agenda().get_href()}", events[0].get('description'))
+        session_materials_url = settings.IDTRACKER_BASE_URL + urlreverse(
+            'ietf.meeting.views.session_details',
+            kwargs=dict(num=meeting.number, acronym=session.group.acronym)
+        )
+        self.assertIn(f"Session materials: {session_materials_url}", events[0].get('description'))
+        self.assertIn(
             urlreverse(
                 'ietf.meeting.views.session_details',
                 kwargs=dict(num=meeting.number, acronym=session.group.acronym)),
-            msg_prefix='ical should contain link to meeting materials page for session')
+            events[0].get('description'))
+        self.assertEqual(
+            session_materials_url,
+            events[0].get('url')
+        )
 
+        self.assertContains(r, f"LOCATION:{slot.location.name}")
+        
         # Floor Plan
         r = self.client.get(urlreverse('floor-plan', kwargs=dict(num=meeting.number)))
         self.assertEqual(r.status_code, 200)
@@ -1050,32 +1058,36 @@ class MeetingTests(BaseMeetingTestCase):
         s1 = Session.objects.filter(meeting=meeting, group__acronym="mars").first()
         a1 = s1.official_timeslotassignment()
         t1 = a1.timeslot
+
         # Create an extra session
         t2 = TimeSlotFactory.create(
             meeting=meeting,
-            time=meeting.tz().localize(
+            time=pytz.utc.localize(
                 datetime.datetime.combine(meeting.date, datetime.time(11, 30))
             )
         )
+     
         s2 = SessionFactory.create(meeting=meeting, group=s1.group, add_to_schedule=False)
         SchedTimeSessAssignment.objects.create(timeslot=t2, session=s2, schedule=meeting.schedule)
-        #
+        
         url = urlreverse('ietf.meeting.views.agenda_ical', kwargs={'num':meeting.number, 'acronym':s1.group.acronym, })
         r = self.client.get(url)
         assert_ical_response_is_valid(self,
                                       r,
                                       expected_event_summaries=['mars - Martian Special Interest Group'],
                                       expected_event_count=2)
-        self.assertContains(r, t1.local_start_time().strftime('%Y%m%dT%H%M%S'))
-        self.assertContains(r, t2.local_start_time().strftime('%Y%m%dT%H%M%S'))
-        #
+        self.assertContains(r, f"DTSTART:{t1.time.strftime('%Y%m%dT%H%M%SZ')}")
+        self.assertContains(r, f"DTEND:{(t1.time + t1.duration).strftime('%Y%m%dT%H%M%SZ')}")
+        self.assertContains(r, f"DTSTART:{t2.time.strftime('%Y%m%dT%H%M%SZ')}")
+        self.assertContains(r, f"DTEND:{(t2.time + t2.duration).strftime('%Y%m%dT%H%M%SZ')}")
+
         url = urlreverse('ietf.meeting.views.agenda_ical', kwargs={'num':meeting.number, 'session_id':s1.id, })
         r = self.client.get(url)
         assert_ical_response_is_valid(self, r,
                                       expected_event_summaries=['mars - Martian Special Interest Group'],
                                       expected_event_count=1)
-        self.assertContains(r, t1.local_start_time().strftime('%Y%m%dT%H%M%S'))
-        self.assertNotContains(r, t2.local_start_time().strftime('%Y%m%dT%H%M%S'))
+        self.assertContains(r, f"DTSTART:{t1.time.strftime('%Y%m%dT%H%M%SZ')}")
+        self.assertNotContains(r, f"DTSTART:{t2.time.strftime('%Y%m%dT%H%M%SZ')}")
 
     def test_parse_agenda_filter_params(self):
         def _r(show=(), hide=(), showtypes=(), hidetypes=()):
@@ -8679,7 +8691,8 @@ class ProceedingsTests(BaseMeetingTestCase):
         self.assertTrue(mock_default_cache.get.called)
         self.assertEqual(mock_default_cache.get.call_args.args[0], cache_key, "same cache key each time")
         self.assertTrue(mock_default_cache.set.called)
-        self.assertEqual(mock_default_cache.set.call_args, call(cache_key, proceedings_content, timeout=86400))
+        self.assertEqual(mock_default_cache.set.call_args.args, (cache_key, proceedings_content))
+        self.assertGreater(mock_default_cache.set.call_args.kwargs["timeout"], 86400)
         mock_default_cache.get.reset_mock()
         mock_default_cache.set.reset_mock()
 
@@ -8725,7 +8738,8 @@ class ProceedingsTests(BaseMeetingTestCase):
         self.assertEqual(result, proceedings_content)  # should have recomputed the same thing
         self.assertFalse(mock_default_cache.get.called, "don't bother reading cache when force_refresh is True")
         self.assertTrue(mock_default_cache.set.called)
-        self.assertEqual(mock_default_cache.set.call_args, call(cache_key, proceedings_content, timeout=86400))
+        self.assertEqual(mock_default_cache.set.call_args.args, (cache_key, proceedings_content))
+        self.assertGreater(mock_default_cache.set.call_args.kwargs["timeout"], 86400)
 
     def test_named_session(self):
         """Session with a name should appear separately in the proceedings"""
@@ -8850,25 +8864,24 @@ class ProceedingsTests(BaseMeetingTestCase):
            - prefer onsite checkedin=True to remote attended when same person has both
         """
 
-        meeting = MeetingFactory(type_id='ietf', date=datetime.date(2023, 11, 4), number="118")
+        m = MeetingFactory(type_id='ietf', date=datetime.date(2023, 11, 4), number="118")
         person_a = PersonFactory(name='Person A')
         person_b = PersonFactory(name='Person B')
         person_c = PersonFactory(name='Person C')
         person_d = PersonFactory(name='Person D')
-        MeetingRegistrationFactory(meeting=meeting, person=person_a, reg_type='onsite', checkedin=True)
-        MeetingRegistrationFactory(meeting=meeting, person=person_b, reg_type='onsite', checkedin=False)
-        MeetingRegistrationFactory(meeting=meeting, person=person_a, reg_type='remote')
-        AttendedFactory(session__meeting=meeting, session__type_id='plenary', person=person_a)
-        MeetingRegistrationFactory(meeting=meeting, person=person_c, reg_type='remote')
-        AttendedFactory(session__meeting=meeting, session__type_id='plenary', person=person_c)
-        MeetingRegistrationFactory(meeting=meeting, person=person_d, reg_type='remote')
+        areg = RegistrationFactory(meeting=m, person=person_a, checkedin=True, with_ticket={'attendance_type_id': 'onsite'})
+        RegistrationFactory(meeting=m, person=person_b, checkedin=False, with_ticket={'attendance_type_id': 'onsite'})
+        creg = RegistrationFactory(meeting=m, person=person_c, with_ticket={'attendance_type_id': 'remote'})
+        RegistrationFactory(meeting=m, person=person_d, with_ticket={'attendance_type_id': 'remote'})
+        AttendedFactory(session__meeting=m, session__type_id='plenary', person=person_a)
+        AttendedFactory(session__meeting=m, session__type_id='plenary', person=person_c)
         url = urlreverse('ietf.meeting.views.proceedings_attendees',kwargs={'num': 118})
         response = self.client.get(url)
         self.assertContains(response, 'Attendee list')
         q = PyQuery(response.content)
         self.assertEqual(2, len(q("#id_attendees tbody tr")))
         text = q('#id_attendees tbody tr').text().replace('\n', ' ')
-        self.assertEqual(text, "A Person onsite C Person remote")
+        self.assertEqual(text, f"A Person {areg.affiliation} {areg.country_code} onsite C Person {creg.affiliation} {creg.country_code} remote")
 
     def test_proceedings_overview(self):
         '''Test proceedings IETF Overview page.
@@ -9269,27 +9282,25 @@ class ProceedingsTests(BaseMeetingTestCase):
         self.assertEqual(sequence,1)
 
     def test_participants_for_meeting(self):
-        person_a = PersonFactory()
-        person_b = PersonFactory()
-        person_c = PersonFactory()
-        person_d = PersonFactory()
         m = MeetingFactory.create(type_id='ietf')
-        MeetingRegistrationFactory(meeting=m, person=person_a, reg_type='onsite', checkedin=True)
-        MeetingRegistrationFactory(meeting=m, person=person_b, reg_type='onsite', checkedin=False)
-        MeetingRegistrationFactory(meeting=m, person=person_c, reg_type='remote')
-        MeetingRegistrationFactory(meeting=m, person=person_d, reg_type='remote')
-        AttendedFactory(session__meeting=m, session__type_id='plenary', person=person_c)
+        areg = RegistrationFactory(meeting=m, checkedin=True, with_ticket={'attendance_type_id': 'onsite'})
+        breg = RegistrationFactory(meeting=m, checkedin=False, with_ticket={'attendance_type_id': 'onsite'})
+        creg = RegistrationFactory(meeting=m, with_ticket={'attendance_type_id': 'remote'})
+        dreg = RegistrationFactory(meeting=m, with_ticket={'attendance_type_id': 'remote'})
+        AttendedFactory(session__meeting=m, session__type_id='plenary', person=creg.person)
         checked_in, attended = participants_for_meeting(m)
-        self.assertTrue(person_a.pk in checked_in)
-        self.assertTrue(person_b.pk not in checked_in)
-        self.assertTrue(person_c.pk in attended)
-        self.assertTrue(person_d.pk not in attended)
+        self.assertIn(areg.person.pk, checked_in)
+        self.assertNotIn(breg.person.pk, checked_in)
+        self.assertNotIn(areg.person.pk, attended)
+        self.assertNotIn(breg.person.pk, attended)
+        self.assertIn(creg.person.pk, attended)
+        self.assertNotIn(dreg.person.pk, attended)
 
     def test_session_attendance(self):
         meeting = MeetingFactory(type_id='ietf', date=datetime.date(2023, 11, 4), number='118')
         make_meeting_test_data(meeting=meeting)
         session = Session.objects.filter(meeting=meeting, group__acronym='mars').first()
-        regs = MeetingRegistrationFactory.create_batch(3, meeting=meeting)
+        regs = RegistrationFactory.create_batch(3, meeting=meeting)
         persons = [reg.person for reg in regs]
         self.assertEqual(session.attended_set.count(), 0)
 
@@ -9335,7 +9346,7 @@ class ProceedingsTests(BaseMeetingTestCase):
         # person0 is already on the bluesheet
         _test_button(persons[0], False)
         # person3 attests he was there
-        persons.append(MeetingRegistrationFactory(meeting=meeting).person)
+        persons.append(RegistrationFactory(meeting=meeting).person)
         # button isn't shown if we're outside the corrections windows
         meeting.importantdate_set.create(name_id='revsub',date=date_today() - datetime.timedelta(days=20))
         _test_button(persons[3], False)
@@ -9393,12 +9404,12 @@ class ProceedingsTests(BaseMeetingTestCase):
 
     def test_bluesheet_data(self):
         session = SessionFactory(meeting__type_id="ietf") 
-        attended_with_affil = MeetingRegistrationFactory(meeting=session.meeting, affiliation="Somewhere")
+        attended_with_affil = RegistrationFactory(meeting=session.meeting, affiliation="Somewhere")
         AttendedFactory(session=session, person=attended_with_affil.person, time="2023-03-13T01:24:00Z")  # joined 2nd
-        attended_no_affil = MeetingRegistrationFactory(meeting=session.meeting)
+        attended_no_affil = RegistrationFactory(meeting=session.meeting, affiliation="")
         AttendedFactory(session=session, person=attended_no_affil.person, time="2023-03-13T01:23:00Z")  # joined 1st
-        MeetingRegistrationFactory(meeting=session.meeting)  # did not attend
-        
+        RegistrationFactory(meeting=session.meeting)  # did not attend
+
         data = bluesheet_data(session)
         self.assertEqual(
             data,
