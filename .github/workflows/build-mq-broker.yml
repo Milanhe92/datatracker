@@ -48,8 +48,7 @@ jobs:
         file: dev/mq/Dockerfile
         platforms: linux/amd64,linux/arm64
         push: true
-        build-args: |
-          RABBITMQ_VERSION=${{ github.event.inputs.rabbitmq_version || '3.13-alpine' }}
+        build-args: RABBITMQ_VERSION=${{ inputs.rabbitmq_version }}
         tags: |
-          ghcr.io/ietf-tools/datatracker-mq:${{ github.event.inputs.rabbitmq_version || '3.13-alpine' }}
-          ghcr.io/ietf-tools/datatracker-mq:latest
+          ghcr.io/milanhe92/datatracker-mq:${{ inputs.rabbitmq_version }}
+          ghcr.io/milanhe92/datatracker-mq:latest
