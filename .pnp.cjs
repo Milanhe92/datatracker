@@ -74,7 +74,7 @@ function $$SETUP_STATE(hydrateRuntimeState, basePath) {
             ["js-cookie", "npm:3.0.5"],\
             ["list.js", "npm:2.3.1"],\
             ["lodash", "npm:4.17.21"],\
-            ["lodash-es", "npm:4.17.21"],\
+            ["lodash-es", "npm:4.17.23"],\
             ["luxon", "npm:3.4.4"],\
             ["moment", "npm:2.30.1"],\
             ["moment-timezone", "npm:0.5.45"],\
@@ -6854,6 +6854,13 @@ function $$SETUP_STATE(hydrateRuntimeState, basePath) {
             ["lodash-es", "npm:4.17.21"]\
           ],\
           "linkType": "HARD"\
+        }],\
+        ["npm:4.17.23", {\
+          "packageLocation": "./.yarn/cache/lodash-es-npm-4.17.23-b4279789e6-b1bd1d141b.zip/node_modules/lodash-es/",\
+          "packageDependencies": [\
+            ["lodash-es", "npm:4.17.23"]\
+          ],\
+          "linkType": "HARD"\
         }]\
       ]],\
       ["lodash.merge", [\
@@ -8358,7 +8365,7 @@ function $$SETUP_STATE(hydrateRuntimeState, basePath) {
             ["js-cookie", "npm:3.0.5"],\
             ["list.js", "npm:2.3.1"],\
             ["lodash", "npm:4.17.21"],\
-            ["lodash-es", "npm:4.17.21"],\
+            ["lodash-es", "npm:4.17.23"],\
             ["luxon", "npm:3.4.4"],\
             ["moment", "npm:2.30.1"],\
             ["moment-timezone", "npm:0.5.45"],\
